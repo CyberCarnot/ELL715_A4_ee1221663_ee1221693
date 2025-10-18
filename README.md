@@ -129,7 +129,7 @@ cd gesture_auth
 
 # Place the following files in this directory:
 # - feature_extractor.py
-# - main.py
+# - evaluator.py
 ```
 
 ### Step 2: Install Dependencies
@@ -183,12 +183,12 @@ The system automatically limits frames based on gesture type:
 
 ### Basic Usage (Cosine Distance)
 ```bash
-python main.py --dataset /path/to/dataset --workers 8
+python evaluator.py --dataset /path/to/dataset --workers 8
 ```
 
 ### Using AIRM Distance (Riemannian Geometry)
 ```bash
-python main.py --dataset /path/to/dataset --workers 8 --distance-metric airm
+python evaluator.py --dataset /path/to/dataset --workers 8 --distance-metric airm
 ```
 
 ### Command-Line Arguments
@@ -204,23 +204,23 @@ python main.py --dataset /path/to/dataset --workers 8 --distance-metric airm
 
 **First-time run on new dataset:**
 ```bash
-python main.py --dataset /data/gestures --workers 12
+python evaluator.py --dataset /data/gestures --workers 12
 ```
 
 **Resume interrupted processing:**
 ```bash
-python main.py --dataset /data/gestures --workers 12
+python evaluator.py --dataset /data/gestures --workers 12
 # Automatically resumes from last saved progress
 ```
 
 **Force recomputation with AIRM:**
 ```bash
-python main.py --dataset /data/gestures --workers 8 --force-reload --distance-metric airm
+python evaluator.py --dataset /data/gestures --workers 8 --force-reload --distance-metric airm
 ```
 
 **Quick test with fewer workers:**
 ```bash
-python main.py --dataset /data/gestures --workers 4
+python evaluator.py --dataset /data/gestures --workers 4
 ```
 
 ---
@@ -443,14 +443,14 @@ Where:
 
 **1. ImportError: No module named 'feature_extractor'**
 ```bash
-# Ensure feature_extractor.py is in the same directory as main.py
-ls -la feature_extractor.py main.py
+# Ensure feature_extractor.py is in the same directory as evaluator.py
+ls -la feature_extractor.py evaluator.py
 ```
 
 **2. Memory Error during processing**
 ```bash
 # Reduce number of workers
-python main.py --dataset /path/to/data --workers 2
+python evaluator.py --dataset /path/to/data --workers 2
 ```
 
 **3. "No gesture instances found" error**
