@@ -1134,8 +1134,7 @@ This code is provided for academic and research purposes.
 
 1. **Check Troubleshooting Section**: Most common issues are covered
 2. **Verify Dataset Structure**: Ensure proper directory organization
-3. **Test with Limited Frames**: Use `--limit-frames` for quick tests
-4. **Check Logs**: Console output provides detailed error messages
+3. **Check Logs**: Console output provides detailed error messages
 
 ### Reporting Issues
 
@@ -1150,7 +1149,7 @@ When reporting issues, please include:
 
 For questions or issues:
 - Create an issue on the repository
-- Email: [Your Email]
+- Email: ee1221663@iitd.ac.in
 - Include "Gesture Auth" in subject line
 
 ---
