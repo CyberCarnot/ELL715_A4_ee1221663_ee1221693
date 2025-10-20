@@ -2,6 +2,8 @@ import cv2
 import numpy as np
 import os
 from numba import njit, prange
+import warnings
+warnings.filterwarnings('ignore', category=RuntimeWarning)
 
 # ==============================================================================
 # NUMBA-OPTIMIZED FUNCTIONS (Outside class for JIT compilation)
@@ -148,12 +150,13 @@ def extract_feature_vectors_numba(silhouette_tunnel, original_depth_volume,
 
 
 @njit(parallel=True, cache=True)
-def normalize_features_numba(F):
+def normalize_features_numba(F, norm_params):
     """
-    Numba-optimized row-wise min-max normalization.
+    Numba-optimized row-wise min-max normalization using provided parameters.
     
     Args:
         F (np.ndarray): 14xN feature matrix
+        norm_params (np.ndarray): 14x2 array with [min, max] for each feature
     
     Returns:
         np.ndarray: Normalized 14xN feature matrix
@@ -163,8 +166,8 @@ def normalize_features_numba(F):
     
     for i in prange(num_features):
         row = F[i, :]
-        min_val = np.min(row)
-        max_val = np.max(row)
+        min_val = norm_params[i, 0]
+        max_val = norm_params[i, 1]
         denominator = max_val - min_val
         
         if denominator > 0:
@@ -234,16 +237,20 @@ class SilhouetteTunnelFeatureExtractor:
     Implements Module 1 of the assignment: Silhouette Tunnel and Feature Extraction.
     
     Optimized with Numba JIT compilation for fast processing.
+    Supports Method 1 (Multi-Scale) and Method 2 (Otsu Thresholding) via parameters.
     """
 
-    def __init__(self, bg_threshold=10):
+    def __init__(self, bg_threshold=10, use_otsu=False, limit_frames=False):
         """
         Initializes the extractor with configuration parameters.
 
         Args:
-            bg_threshold (int): The threshold for background subtraction.
+            bg_threshold (int): The threshold for background subtraction (fixed threshold mode).
+            use_otsu (bool): If True, use adaptive Otsu thresholding instead of fixed threshold.
         """
         self.bg_threshold = bg_threshold
+        self.use_otsu = use_otsu
+        self.limit_frames = limit_frames
 
     def _load_frame(self, folder_path, frame_num):
         """
@@ -264,66 +271,108 @@ class SilhouetteTunnelFeatureExtractor:
 
     def _load_sequence(self, folder_path):
         """
-        Loads frames for a gesture instance, constrained based on gesture type.
+        Loads frames for a gesture instance.
         
-        Frame constraints by gesture:
+        If limit_frames is True, loading is constrained based on gesture type.
+        Otherwise, all available gesture frames are loaded.
+
+        Frame constraints by gesture (if limit_frames=True):
         - Compass: 119 frames
         - Piano: 79 frames
         - Push: 60 frames
         - UCDO: 79 frames
         
         Args:
-            folder_path (str): Path to gesture instance directory
-        
+            folder_path (str): Path to gesture instance directory.
+            limit_frames (bool): Whether to limit frames based on gesture type.
+            
         Returns:
             tuple: (gesture_frames, background_frame)
+            
+        Raises:
+            ValueError: If the directory is not found, has less than 2 frames,
+                        or if no gesture frames could be loaded.
         """
-        # Define frame limits by gesture type
-        gesture_frame_limits = {
-            'Compass': 119,
-            'Piano': 79,
-            'Push': 60,
-            'UCDO': 79
-        }
         
-        # Extract gesture type from folder path
-        # Assuming path structure: .../subject/gesture/instance
-        gesture_name = None
-        for gest in gesture_frame_limits.keys():
-            if gest in folder_path:
-                gesture_name = gest
-                break
-        
-        # Default to 51 if gesture not recognized
-        max_frames = gesture_frame_limits.get(gesture_name, 51)
-        
-        num_frames_available = len(os.listdir(os.path.join(folder_path, 'lsb')))
-        
-        # Frame 1 is background
+        # Get total number of frames available in the directory
+        try:
+            lsb_path = os.path.join(folder_path, 'lsb')
+            num_frames_available = len(os.listdir(lsb_path))
+        except FileNotFoundError:
+            raise ValueError(f"Directory not found: {lsb_path}")
+        except Exception as e:
+            raise ValueError(f"Error reading directory {lsb_path}: {e}")
+
+        if num_frames_available < 2:
+            raise ValueError(f"Not enough frames in {folder_path}. Found {num_frames_available}, need at least 2 (1 background, 1+ gesture).")
+
+        # Frame 1 is always the background
         background_frame = self._load_frame(folder_path, 1)
         
-        # Load gesture frames starting from frame 2, up to max_frames
+        num_gesture_frames_to_load = 0
+        available_gesture_frames = num_frames_available - 1 # All frames except background
+
+        if self.limit_frames:
+            # --- Logic from Version 1 ---
+            # Define frame limits (number of gesture frames) by gesture type
+            gesture_frame_limits = {
+                'Compass': 119,
+                'Piano': 79,
+                'Push': 60,
+                'UCDO': 79
+            }
+            
+            # Extract gesture type from folder path
+            gesture_name = None
+            for gest in gesture_frame_limits.keys():
+                if gest in folder_path:
+                    gesture_name = gest
+                    break
+            
+            # Default to 51 gesture frames if gesture not recognized
+            max_gesture_frames_limit = gesture_frame_limits.get(gesture_name, 51)
+            
+            # Load the minimum of the gesture limit or the available frames
+            num_gesture_frames_to_load = min(max_gesture_frames_limit, available_gesture_frames)
+
+        else:
+            # --- Logic from Version 2 ---
+            # Load all available gesture frames
+            num_gesture_frames_to_load = available_gesture_frames
+
+        # Load gesture frames starting from frame 2
         gesture_frames = []
-        frames_to_load = min(max_frames, num_frames_available - 1)  # -1 because frame 1 is background
-        
-        for i in range(2, 2 + frames_to_load):
+        # Loop from 2 up to (2 + num_gesture_frames_to_load)
+        # e.g., if loading 60 frames, range(2, 62) loads indices 2..61
+        for i in range(2, 2 + num_gesture_frames_to_load):
             frame = self._load_frame(folder_path, i)
             if frame is not None:
                 gesture_frames.append(frame)
         
         if not gesture_frames:
-            raise ValueError(f"No gesture frames found in {folder_path}")
-        
+            # Safety check from both versions
+            raise ValueError(f"No gesture frames were loaded from {folder_path}")
+            
         return gesture_frames, background_frame
 
     def _get_clean_silhouettes(self, gesture_frames, background_frame):
         """
         Performs background subtraction and largest connected component analysis.
+        
+        Supports both fixed threshold (baseline) and adaptive Otsu thresholding (Method 2).
         """
         clean_masks = []
         for frame in gesture_frames:
             diff = cv2.absdiff(background_frame, frame)
-            _, fg_mask = cv2.threshold(diff, self.bg_threshold, 255, cv2.THRESH_BINARY)
+            
+            # Choose thresholding method
+            if self.use_otsu:
+                # Method 2: Otsu Thresholding
+                _, fg_mask = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            else:
+                # Baseline: Fixed threshold
+                _, fg_mask = cv2.threshold(diff, self.bg_threshold, 255, cv2.THRESH_BINARY)
+            
             fg_mask = fg_mask.astype(np.uint8)
 
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(fg_mask, 8, cv2.CV_32S)
@@ -343,19 +392,39 @@ class SilhouetteTunnelFeatureExtractor:
         """
         return compute_directional_distances_numba(silhouette_tunnel)
 
-    def _normalize_features(self, F):
+    def _compute_normalization_params(self, F):
         """
-        Wrapper for Numba-optimized normalization.
+        Compute min and max for each feature dimension.
+        
+        Args:
+            F (np.ndarray): 14xN feature matrix
+        
+        Returns:
+            np.ndarray: 14x2 array with [min, max] for each feature
         """
-        return normalize_features_numba(F)
+        num_features = F.shape[0]
+        norm_params = np.zeros((num_features, 2), dtype=np.float32)
+        
+        for i in range(num_features):
+            norm_params[i, 0] = np.min(F[i, :])
+            norm_params[i, 1] = np.max(F[i, :])
+        
+        return norm_params
+
+    def _normalize_features(self, F, norm_params):
+        """
+        Wrapper for Numba-optimized normalization using provided parameters.
+        """
+        return normalize_features_numba(F, norm_params)
     
-    def _feature_from_tunnel(self, silhouette_tunnel, original_depth_volume):
+    def _feature_from_tunnel(self, silhouette_tunnel, original_depth_volume, norm_params=None):
         """
         Extracts 14D feature vectors from the silhouette tunnel (optimized version).
         
         Args:
             silhouette_tunnel (np.ndarray): TxHxW binary silhouette mask.
             original_depth_volume (np.ndarray): TxHxW original depth values.
+            norm_params (np.ndarray): Optional normalization parameters from full hand
         
         Returns:
             tuple: (F_unnormalized, F_normalized, silhouette_tunnel, original_depth_volume)
@@ -372,8 +441,11 @@ class SilhouetteTunnelFeatureExtractor:
         if F.shape[1] == 0:
             return None, None, None, None
         
-        # Normalize using optimized function
-        F_normalized = self._normalize_features(F)
+        # Normalize using provided parameters or compute new ones
+        if norm_params is None:
+            norm_params = self._compute_normalization_params(F)
+        
+        F_normalized = self._normalize_features(F, norm_params)
         
         return F, F_normalized, silhouette_tunnel, original_depth_volume
 
@@ -454,7 +526,87 @@ class SilhouetteTunnelFeatureExtractor:
 
         return [np.array(tunnel) for tunnel in sub_tunnels]
 
-    def compute_all_descriptors_from_gesture(self, folder_path):
+    def compute_multiscale_descriptor(self, folder_path, baseline_temp, scales=[0.5, 0.25]):
+        """
+        Method 1: Multi-Scale Silhouette Tunnels (OPTIMIZED)
+        
+        Computes descriptors at multiple spatial scales and concatenates them.
+        OPTIMIZATION: Reuses baseline_temp (scale=1.0) to avoid recomputation.
+        
+        Args:
+            folder_path (str): Path to the gesture instance directory.
+            baseline_temp (np.ndarray): Pre-computed baseline temporal descriptor (735-dim)
+            scales (list): Spatial scales to process (default: [0.5, 0.25], skip 1.0)
+        
+        Returns:
+            np.ndarray: Multi-scale concatenated descriptor (2205-dim: 735*3)
+        """
+        try:
+            gesture_frames, background_frame = self._load_sequence(folder_path)
+            original_depth_volume = np.array(gesture_frames)
+            silhouette_tunnel = self._get_clean_silhouettes(gesture_frames, background_frame)
+            
+            if np.sum(silhouette_tunnel) == 0:
+                return np.zeros(2205, dtype=np.float32)
+            
+            T, H, W = silhouette_tunnel.shape
+            
+            # Compute normalization parameters from full resolution (scale 1.0)
+            d_E, d_W, d_N, d_S, d_NE, d_NW, d_SE, d_SW, d_f, d_b = self._compute_directional_distances(silhouette_tunnel)
+            F_full = extract_feature_vectors_numba(
+                silhouette_tunnel, original_depth_volume,
+                d_E, d_W, d_N, d_S, d_NE, d_NW, d_SE, d_SW, d_f, d_b
+            )
+            
+            if F_full.shape[1] == 0:
+                return np.zeros(2205, dtype=np.float32)
+            
+            norm_params = self._compute_normalization_params(F_full)
+            
+            # Start with baseline (scale 1.0) - already computed!
+            scale_descriptors = [baseline_temp]
+            
+            # Only compute scales [0.5, 0.25]
+            for scale in scales:
+                scaled_h, scaled_w = int(H * scale), int(W * scale)
+                if scaled_h < 1 or scaled_w < 1:
+                    scale_descriptors.append(np.zeros(735, dtype=np.float32))
+                    continue
+                
+                scaled_tunnel = np.zeros((T, scaled_h, scaled_w), dtype=np.uint8)
+                scaled_depth = np.zeros((T, scaled_h, scaled_w), dtype=np.float32)
+                
+                for t in range(T):
+                    scaled_tunnel[t] = cv2.resize(
+                        silhouette_tunnel[t].astype(np.uint8),
+                        (scaled_w, scaled_h),
+                        interpolation=cv2.INTER_NEAREST
+                    )
+                    scaled_depth[t] = cv2.resize(
+                        original_depth_volume[t].astype(np.float32),
+                        (scaled_w, scaled_h),
+                        interpolation=cv2.INTER_LINEAR
+                    )
+                
+                # Extract features using SAME normalization params as full scale
+                F, F_normalized, _, _ = self._feature_from_tunnel(scaled_tunnel, scaled_depth, norm_params)
+                
+                if F is not None and F_normalized is not None:
+                    scale_desc = build_temporal_hierarchy_descriptor(F_normalized)
+                    scale_descriptors.append(scale_desc)
+                else:
+                    scale_descriptors.append(np.zeros(735, dtype=np.float32))
+
+            # Concatenate: baseline (735) + scale_0.5 (735) + scale_0.25 (735) = 2205-dim
+            concat_descriptor = np.concatenate(scale_descriptors).astype(np.float32)
+            
+            return concat_descriptor
+    
+        except Exception as e:
+            print(f"[ERROR] Exception in compute_multiscale_descriptor: {str(e)}")
+            return np.zeros(2205, dtype=np.float32)
+
+    def compute_all_descriptors_from_gesture(self, folder_path, include_multiscale=False):
         """
         Process gesture and compute all descriptors in one pass (optimized).
         
@@ -462,11 +614,13 @@ class SilhouetteTunnelFeatureExtractor:
         1. Loads and processes the gesture to extract F_norm (full feature matrix)
         2. Computes baseline descriptors (covariance and temporal hierarchy)
         3. Segments hand into 3 sub-silhouettes by depth
-        4. Computes morphology descriptors for each sub-silhouette
-        5. Returns all descriptors AND feature matrices in a single dictionary
+        4. Computes morphology descriptors for each sub-silhouette (using SAME normalization)
+        5. Optionally computes multi-scale descriptor (Method 1) if include_multiscale=True
+        6. Returns all descriptors AND feature matrices in a single dictionary
         
         Args:
             folder_path (str): Path to the gesture instance directory.
+            include_multiscale (bool): If True, compute multi-scale descriptor (Method 1).
         
         Returns:
             dict: {
@@ -474,6 +628,7 @@ class SilhouetteTunnelFeatureExtractor:
                 'temporal': 735-dim temporal hierarchy descriptor,
                 'morph_cov': [4 x 105-dim] (full + 3 sub covariance descriptors),
                 'morph_temp': [4 x 735-dim] (full + 3 sub temporal hierarchy descriptors),
+                'multiscale': 2205-dim multi-scale descriptor (only if include_multiscale=True),
                 'feature_matrices': {
                     'full': (F_unnormalized, F_normalized),
                     'sub_1': (F_unnormalized, F_normalized),
@@ -492,11 +647,14 @@ class SilhouetteTunnelFeatureExtractor:
             if np.sum(silhouette_tunnel) == 0:
                 return None
             
-            # Step 2: Extract full feature matrix (now optimized!)
+            # Step 2: Extract full feature matrix and compute normalization params
             F, F_normalized, _, _ = self._feature_from_tunnel(silhouette_tunnel, original_depth_volume)
             
             if F is None or F_normalized is None:
                 return None
+            
+            # Compute normalization parameters from FULL hand
+            norm_params = self._compute_normalization_params(F)
             
             # Initialize feature matrices storage
             feature_matrices = {
@@ -510,18 +668,17 @@ class SilhouetteTunnelFeatureExtractor:
             # Step 4: Segment hand into 3 sub-silhouettes by depth
             sub_tunnels = self.segment_hand_by_depth(original_depth_volume, silhouette_tunnel, k=3)
             
-            # Step 5: Compute morphology descriptors
+            # Step 5: Compute morphology descriptors using SAME normalization params
             morph_cov = [baseline_cov]  # Start with full silhouette covariance
             morph_temp = [baseline_temp]  # Start with full silhouette temporal
             
             for idx, sub_tunnel in enumerate(sub_tunnels, 1):
-                sub_F, sub_F_normalized, _, _ = self._feature_from_tunnel(sub_tunnel, original_depth_volume)
+                # Extract features using SAME normalization params as full hand
+                sub_F, sub_F_normalized, _, _ = self._feature_from_tunnel(sub_tunnel, original_depth_volume, norm_params)
                 
                 if sub_F is not None and sub_F_normalized is not None:
                     # Store sub-silhouette feature matrices
                     feature_matrices[f'sub_{idx}'] = (sub_F, sub_F_normalized)
-                    
-                    # Compute covariance descriptor for sub-silhouette
                     sub_cov = compute_covariance_descriptor(sub_F_normalized)
                     morph_cov.append(sub_cov)
                     
@@ -534,14 +691,21 @@ class SilhouetteTunnelFeatureExtractor:
                     morph_cov.append(np.zeros(105, dtype=np.float32))
                     morph_temp.append(np.zeros(735, dtype=np.float32))
             
-            # Return all descriptors AND feature matrices
-            return {
+            # Build result dictionary
+            result = {
                 'baseline': baseline_cov,
                 'temporal': baseline_temp,
                 'morph_cov': morph_cov,
                 'morph_temp': morph_temp,
                 'feature_matrices': feature_matrices
             }
+            
+            # Step 6: Optionally compute Multi-Scale descriptor (Method 1)
+            if include_multiscale:
+                multiscale_desc = self.compute_multiscale_descriptor(folder_path, baseline_temp)
+                result['multiscale'] = multiscale_desc
+            
+            return result
         
         except Exception as e:
             print(f"[ERROR] Exception in compute_all_descriptors_from_gesture: {str(e)}")
@@ -612,5 +776,5 @@ def build_temporal_hierarchy_descriptor(normalized_feature_matrix, num_levels=3)
             partition_descriptor = compute_covariance_descriptor(partition_feature_matrix)
             all_descriptors.append(partition_descriptor)
 
-    # Concatenate all descriptors
+    # Concatenate all descriptors from all levels
     return np.concatenate(all_descriptors).astype(np.float32)
